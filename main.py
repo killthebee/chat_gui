@@ -8,11 +8,6 @@ from utils import get_args, connect_to_chat
 
 loop = asyncio.get_event_loop()
 
-messages_queue = asyncio.Queue()
-sending_queue = asyncio.Queue()
-status_update_queue = asyncio.Queue()
-messages_to_save_queue = asyncio.Queue()
-
 
 async def read_history(filepath, messages_queue):
     async with aiofiles.open(filepath, 'r') as f:
@@ -43,10 +38,22 @@ async def save_messages(filepath, queue):
             await f.write(message)
 
 
+async def send_message(queue):
+    while True:
+        message = await queue.get()
+        print(message)
+
+
 async def main():
+    messages_queue = asyncio.Queue()
+    sending_queue = asyncio.Queue()
+    status_update_queue = asyncio.Queue()
+    messages_to_save_queue = asyncio.Queue()
+
     args = get_args()
     await read_history(args.file_path, messages_queue)
     return await asyncio.gather(
+        send_message(sending_queue),
         save_messages(args.file_path, messages_to_save_queue),
         read_msgs(args.host, args.port, messages_queue, messages_to_save_queue),
         gui.draw(messages_queue, sending_queue, status_update_queue)
