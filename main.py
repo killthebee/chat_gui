@@ -38,10 +38,9 @@ async def save_messages(filepath, queue):
             await f.write(message)
 
 
-async def send_message(queue):
-    while True:
-        message = await queue.get()
-        print(message)
+async def send_message(writer, message):
+    writer.write(f'{sanitize(message)}\n\n'.encode())
+    await writer.drain()
 
 
 async def register_user(host, port, path):
@@ -77,7 +76,7 @@ async def is_authentic_token(reader, writer, token):
     return not json.loads(results) is None
 
 
-async def run_message_sender(host, port, path):
+async def run_message_sender(host, port, path, queue):
     while True:
         if not is_token_file_exists(path):
             await asyncio.sleep(0)
@@ -93,9 +92,8 @@ async def run_message_sender(host, port, path):
 
             while True:
                 print('LOGGINED IN!!!')
-                await asyncio.sleep(10)
-            #     message = input('write message: ')
-            #     await send_message(writer, message)
+                message = await queue.get()
+                await send_message(writer, message)
 
 
 async def main():
@@ -108,8 +106,7 @@ async def main():
     await read_history(args.history_file_path, messages_queue)
     return await asyncio.gather(
         run_token_handler(args.host, args.sending_port, args.token_file_path, args.token),
-        run_message_sender(args.host, args.sending_port, args.token_file_path),
-        send_message(sending_queue),
+        run_message_sender(args.host, args.sending_port, args.token_file_path, sending_queue),
         save_messages(args.history_file_path, messages_to_save_queue),
         read_msgs(args.host, args.reading_port, messages_queue, messages_to_save_queue),
         gui.draw(messages_queue, sending_queue, status_update_queue)
