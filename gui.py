@@ -1,6 +1,8 @@
 import tkinter as tk
 import asyncio
+
 from tkinter.scrolledtext import ScrolledText
+from tkinter import messagebox
 from enum import Enum
 
 
@@ -97,10 +99,16 @@ def create_status_panel(root_frame):
     status_write_label = tk.Label(connections_frame, height=1, fg='grey', font='arial 10', anchor='w')
     status_write_label.pack(side="top", fill=tk.X)
 
-    return (nickname_label, status_read_label, status_write_label)
+    return nickname_label, status_read_label, status_write_label
 
 
-async def draw(messages_queue, sending_queue, status_updates_queue):
+async def send_error(error_queue):
+    while True:
+        error_title, error_message = await error_queue.get()
+        messagebox.showerror(error_title, error_message)
+
+
+async def draw(messages_queue, sending_queue, status_updates_queue, error_queue):
     root = tk.Tk()
 
     root.title('Чат Майнкрафтера')
@@ -129,5 +137,6 @@ async def draw(messages_queue, sending_queue, status_updates_queue):
     await asyncio.gather(
         update_tk(root_frame),
         update_conversation_history(conversation_panel, messages_queue),
-        update_status_panel(status_labels, status_updates_queue)
+        update_status_panel(status_labels, status_updates_queue),
+        send_error(error_queue)
     )
