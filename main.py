@@ -18,9 +18,13 @@ async def read_history(filepath, messages_queue):
             messages_queue.put_nowait(message)
 
 
-async def read_msgs(host, port, messages_queue, messages_to_save_queue):
+async def read_msgs(host, port, messages_queue, messages_to_save_queue, status_update_queue):
+    event = gui.ReadConnectionStateChanged.INITIATED
+    status_update_queue.put_nowait(event)
     async with connect_to_chat(host, port) as connection:
         reader, writer = connection
+        event = gui.ReadConnectionStateChanged.ESTABLISHED
+        status_update_queue.put_nowait(event)
         while True:
             data = await reader.read(100)
             try:
@@ -68,33 +72,31 @@ async def run_token_handler(host, port, path, token):
         await register_user(host, port, path)
 
 
-async def is_authentic_token(reader, writer, token):
+async def authenticate_token(reader, writer, token):
     writer.write(f'{sanitize(token)}\n\n'.encode())
     await writer.drain()
     for _ in range(0, 2):
         results = await reader.readline()
-        print(f'HHMMM {results.decode()}')
-    return not json.loads(results) is None
+    return json.loads(results)
 
 
-async def run_message_sender(host, port, token, queue, error_queue):
-    while True:
-        # if not is_token_file_exists(path):
-        #     await asyncio.sleep(0)
-        #     continue
-
-        async with connect_to_chat(host, port) as connection:
-            reader, writer = connection
-            # token = await read_token_file(path)
-
-            if not await is_authentic_token(reader, writer, token):
-                error_queue.put_nowait(['Неверный токен', 'Проверьте токен, сервер его не узнал'])
-                raise TokenError('Invalid token')
-
-            while True:
-                print('LOGGINED IN!!!')
-                message = await queue.get()
-                await send_message(writer, message)
+async def run_message_sender(host, port, token, sending_queue, error_queue, status_update_queue):
+    event = gui.SendingConnectionStateChanged.INITIATED
+    status_update_queue.put_nowait(event)
+    async with connect_to_chat(host, port) as connection:
+        reader, writer = connection
+        event = gui.SendingConnectionStateChanged.ESTABLISHED
+        status_update_queue.put_nowait(event)
+        authentication_result = await authenticate_token(reader, writer, token)
+        if not authentication_result:
+            error_queue.put_nowait(['Неверный токен', 'Проверьте токен, сервер его не узнал'])
+            raise TokenError('Invalid token')
+        else:
+            event = gui.NicknameReceived(authentication_result['nickname'])
+            status_update_queue.put_nowait(event)
+        while True:
+            message = await sending_queue.get()
+            await send_message(writer, message)
 
 
 async def main():
@@ -107,10 +109,9 @@ async def main():
     args = get_args()
     await read_history(args.history_file_path, messages_queue)
     return await asyncio.gather(
-        # run_token_handler(args.host, args.sending_port, args.token_file_path, args.token),
-        run_message_sender(args.host, args.sending_port, args.token, sending_queue, error_queue),
+        run_message_sender(args.host, args.sending_port, args.token, sending_queue, error_queue, status_update_queue),
         save_messages(args.history_file_path, messages_to_save_queue),
-        read_msgs(args.host, args.reading_port, messages_queue, messages_to_save_queue),
+        read_msgs(args.host, args.reading_port, messages_queue, messages_to_save_queue, status_update_queue),
         gui.draw(messages_queue, sending_queue, status_update_queue, error_queue)
     )
 
