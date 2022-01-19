@@ -4,12 +4,15 @@ import datetime
 import aiofiles
 import json
 import logging
+import time
 
 from errors import TokenError
 from utils import (get_args, connect_to_chat, sanitize, save_token, is_token_file_exists, read_token_file,
                    delete_token_file)
 
 loop = asyncio.get_event_loop()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('watchdog_logger')
 
 
 async def read_history(filepath, queues):
@@ -28,6 +31,7 @@ async def read_msgs(host, port, queues):
         queues['status_update_queue'].put_nowait(event)
         while True:
             data = await reader.read(100)
+            queues['watchdog_queue'].put_nowait(f'[{time.time()}] Connection is alive. Source: New message in chat')
             try:
                 message = f"[{datetime.datetime.now().strftime('%d.%m.%y %H:%M')}] {data.decode()}"
                 queues['messages_queue'].put_nowait(message)
@@ -89,15 +93,24 @@ async def run_message_sender(host, port, token, queues):
         event = gui.SendingConnectionStateChanged.ESTABLISHED
         queues['status_update_queue'].put_nowait(event)
         authentication_result = await authenticate_token(reader, writer, token)
+        queues['watchdog_queue'].put_nowait(f'[{time.time()}] Connection is alive. Prompt before auth')
         if not authentication_result:
             queues['error_queue'].put_nowait(['Неверный токен', 'Проверьте токен, сервер его не узнал'])
             raise TokenError('Invalid token')
         else:
+            queues['watchdog_queue'].put_nowait(f'[{time.time()}] Connection is alive. Authorization done')
             event = gui.NicknameReceived(authentication_result['nickname'])
             queues['status_update_queue'].put_nowait(event)
         while True:
             message = await queues['sending_queue'].get()
             await send_message(writer, message)
+            queues['watchdog_queue'].put_nowait(f'[{time.time()}] Connection is alive. Message sent')
+
+
+async def watch_for_connection(queues):
+    while True:
+        event = await queues['watchdog_queue'].get()
+        logger.info(event)
 
 
 async def main():
@@ -112,6 +125,7 @@ async def main():
     args = get_args()
     await read_history(args.history_file_path, queues)
     return await asyncio.gather(
+        watch_for_connection(queues),
         run_message_sender(args.host, args.sending_port, args.token, queues),
         save_messages(args.history_file_path, queues['messages_to_save_queue']),
         read_msgs(args.host, args.reading_port, queues),
