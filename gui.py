@@ -108,7 +108,7 @@ async def send_error(error_queue):
         messagebox.showerror(error_title, error_message)
 
 
-async def draw(messages_queue, sending_queue, status_updates_queue, error_queue):
+async def draw(queues):
     root = tk.Tk()
 
     root.title('Чат Майнкрафтера')
@@ -124,11 +124,11 @@ async def draw(messages_queue, sending_queue, status_updates_queue, error_queue)
     input_field = tk.Entry(input_frame)
     input_field.pack(side="left", fill=tk.X, expand=True)
 
-    input_field.bind("<Return>", lambda event: process_new_message(input_field, sending_queue))
+    input_field.bind("<Return>", lambda event: process_new_message(input_field, queues['sending_queue']))
 
     send_button = tk.Button(input_frame)
     send_button["text"] = "Отправить"
-    send_button["command"] = lambda: process_new_message(input_field, sending_queue)
+    send_button["command"] = lambda: process_new_message(input_field, queues['sending_queue'])
     send_button.pack(side="left")
 
     conversation_panel = ScrolledText(root_frame, wrap='none')
@@ -136,7 +136,7 @@ async def draw(messages_queue, sending_queue, status_updates_queue, error_queue)
 
     await asyncio.gather(
         update_tk(root_frame),
-        update_conversation_history(conversation_panel, messages_queue),
-        update_status_panel(status_labels, status_updates_queue),
-        send_error(error_queue)
+        update_conversation_history(conversation_panel, queues['messages_queue']),
+        update_status_panel(status_labels, queues['status_update_queue']),
+        send_error(queues['error_queue'])
     )

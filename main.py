@@ -3,6 +3,7 @@ import gui
 import datetime
 import aiofiles
 import json
+import logging
 
 from errors import TokenError
 from utils import (get_args, connect_to_chat, sanitize, save_token, is_token_file_exists, read_token_file,
@@ -11,26 +12,26 @@ from utils import (get_args, connect_to_chat, sanitize, save_token, is_token_fil
 loop = asyncio.get_event_loop()
 
 
-async def read_history(filepath, messages_queue):
+async def read_history(filepath, queues):
     async with aiofiles.open(filepath, 'r') as f:
         messages = await f.readlines()
         for message in messages:
-            messages_queue.put_nowait(message)
+            queues['messages_queue'].put_nowait(message)
 
 
-async def read_msgs(host, port, messages_queue, messages_to_save_queue, status_update_queue):
+async def read_msgs(host, port, queues):
     event = gui.ReadConnectionStateChanged.INITIATED
-    status_update_queue.put_nowait(event)
+    queues['status_update_queue'].put_nowait(event)
     async with connect_to_chat(host, port) as connection:
         reader, writer = connection
         event = gui.ReadConnectionStateChanged.ESTABLISHED
-        status_update_queue.put_nowait(event)
+        queues['status_update_queue'].put_nowait(event)
         while True:
             data = await reader.read(100)
             try:
                 message = f"[{datetime.datetime.now().strftime('%d.%m.%y %H:%M')}] {data.decode()}"
-                messages_queue.put_nowait(message)
-                messages_to_save_queue.put_nowait(message)
+                queues['messages_queue'].put_nowait(message)
+                queues['messages_to_save_queue'].put_nowait(message)
             except UnicodeDecodeError:
                 continue
             # await asyncio.sleep(1)
@@ -80,39 +81,41 @@ async def authenticate_token(reader, writer, token):
     return json.loads(results)
 
 
-async def run_message_sender(host, port, token, sending_queue, error_queue, status_update_queue):
+async def run_message_sender(host, port, token, queues):
     event = gui.SendingConnectionStateChanged.INITIATED
-    status_update_queue.put_nowait(event)
+    queues['status_update_queue'].put_nowait(event)
     async with connect_to_chat(host, port) as connection:
         reader, writer = connection
         event = gui.SendingConnectionStateChanged.ESTABLISHED
-        status_update_queue.put_nowait(event)
+        queues['status_update_queue'].put_nowait(event)
         authentication_result = await authenticate_token(reader, writer, token)
         if not authentication_result:
-            error_queue.put_nowait(['Неверный токен', 'Проверьте токен, сервер его не узнал'])
+            queues['error_queue'].put_nowait(['Неверный токен', 'Проверьте токен, сервер его не узнал'])
             raise TokenError('Invalid token')
         else:
             event = gui.NicknameReceived(authentication_result['nickname'])
-            status_update_queue.put_nowait(event)
+            queues['status_update_queue'].put_nowait(event)
         while True:
-            message = await sending_queue.get()
+            message = await queues['sending_queue'].get()
             await send_message(writer, message)
 
 
 async def main():
-    messages_queue = asyncio.Queue()
-    sending_queue = asyncio.Queue()
-    status_update_queue = asyncio.Queue()
-    messages_to_save_queue = asyncio.Queue()
-    error_queue = asyncio.Queue()
-
+    queues = {
+        'messages_queue': asyncio.Queue(),
+        'sending_queue': asyncio.Queue(),
+        'status_update_queue': asyncio.Queue(),
+        'messages_to_save_queue': asyncio.Queue(),
+        'error_queue': asyncio.Queue(),
+        'watchdog_queue': asyncio.Queue(),
+    }
     args = get_args()
-    await read_history(args.history_file_path, messages_queue)
+    await read_history(args.history_file_path, queues)
     return await asyncio.gather(
-        run_message_sender(args.host, args.sending_port, args.token, sending_queue, error_queue, status_update_queue),
-        save_messages(args.history_file_path, messages_to_save_queue),
-        read_msgs(args.host, args.reading_port, messages_queue, messages_to_save_queue, status_update_queue),
-        gui.draw(messages_queue, sending_queue, status_update_queue, error_queue)
+        run_message_sender(args.host, args.sending_port, args.token, queues),
+        save_messages(args.history_file_path, queues['messages_to_save_queue']),
+        read_msgs(args.host, args.reading_port, queues),
+        gui.draw(queues)
     )
 
 
