@@ -6,6 +6,8 @@ import json
 import logging
 import time
 
+from asyncio import TimeoutError
+from async_timeout import timeout
 from errors import TokenError
 from utils import (get_args, connect_to_chat, sanitize, save_token, is_token_file_exists, read_token_file,
                    delete_token_file)
@@ -108,9 +110,17 @@ async def run_message_sender(host, port, token, queues):
 
 
 async def watch_for_connection(queues):
+    timeout_sum = 0
     while True:
-        event = await queues['watchdog_queue'].get()
-        logger.info(event)
+        try:
+            async with timeout(1):
+                event = await queues['watchdog_queue'].get()
+                timeout_sum = 0
+                logger.info(event)
+
+        except TimeoutError:
+            timeout_sum += 1
+            logger.info(f"{timeout_sum}s timeout is elapsed")
 
 
 async def main():
