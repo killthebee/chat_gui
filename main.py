@@ -9,6 +9,7 @@ import time
 from asyncio import TimeoutError
 from async_timeout import timeout
 from errors import TokenError
+from anyio import create_task_group
 from utils import (get_args, connect_to_chat, sanitize, save_token, is_token_file_exists, read_token_file,
                    delete_token_file)
 
@@ -119,8 +120,21 @@ async def watch_for_connection(queues):
                 logger.info(event)
 
         except TimeoutError:
+            if timeout_sum >= 3:
+                raise ConnectionError
             timeout_sum += 1
             logger.info(f"{timeout_sum}s timeout is elapsed")
+
+
+async def handle_connection(host, sending_port, token, reading_port, queues):
+    while True:
+        try:
+            async with create_task_group() as tg:
+                tg.start_soon(run_message_sender, host, sending_port, token, queues)
+                tg.start_soon(read_msgs, host, reading_port, queues)
+                tg.start_soon(watch_for_connection, queues)
+        except ConnectionError:
+            logger.info('Reconnecting to server')
 
 
 async def main():
@@ -135,10 +149,8 @@ async def main():
     args = get_args()
     await read_history(args.history_file_path, queues)
     return await asyncio.gather(
-        watch_for_connection(queues),
-        run_message_sender(args.host, args.sending_port, args.token, queues),
+        handle_connection(args.host, args.sending_port, args.token, args.reading_port, queues),
         save_messages(args.history_file_path, queues['messages_to_save_queue']),
-        read_msgs(args.host, args.reading_port, queues),
         gui.draw(queues)
     )
 
