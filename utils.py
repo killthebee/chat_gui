@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import aiofiles
 
+from socket import gaierror
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -49,11 +50,16 @@ def delete_token_file(path):
 
 @asynccontextmanager
 async def connect_to_chat(host, port):
-    reader, writer = await asyncio.open_connection(host, port)
-    try:
-        yield reader, writer
-    finally:
-        writer.close()
+    while True:
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+        except gaierror:  # gaiiii
+            await asyncio.sleep(1)
+            continue
+        try:
+            yield reader, writer
+        finally:
+            writer.close()
 
 
 def sanitize(message):

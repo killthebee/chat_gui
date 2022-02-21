@@ -25,7 +25,15 @@ async def read_history(filepath, queues):
             queues['messages_queue'].put_nowait(message)
 
 
-async def read_msgs(host, port, queues):
+async def read_msgs(queues, reader):
+    data = await reader.read(100)
+    queues['watchdog_queue'].put_nowait(f'[{time.time()}] Connection is alive. Source: New message in chat')
+    message = f"[{datetime.datetime.now().strftime('%d.%m.%y %H:%M')}] {data.decode()}"
+    queues['messages_queue'].put_nowait(message)
+    queues['messages_to_save_queue'].put_nowait(message)
+
+
+async def read_msgs_handler(host, port, queues):
     event = gui.ReadConnectionStateChanged.INITIATED
     queues['status_update_queue'].put_nowait(event)
     async with connect_to_chat(host, port) as connection:
@@ -33,12 +41,8 @@ async def read_msgs(host, port, queues):
         event = gui.ReadConnectionStateChanged.ESTABLISHED
         queues['status_update_queue'].put_nowait(event)
         while True:
-            data = await reader.read(100)
-            queues['watchdog_queue'].put_nowait(f'[{time.time()}] Connection is alive. Source: New message in chat')
             try:
-                message = f"[{datetime.datetime.now().strftime('%d.%m.%y %H:%M')}] {data.decode()}"
-                queues['messages_queue'].put_nowait(message)
-                queues['messages_to_save_queue'].put_nowait(message)
+                await read_msgs(queues, reader)
             except UnicodeDecodeError:
                 continue
             # await asyncio.sleep(1)
@@ -51,7 +55,8 @@ async def save_messages(filepath, queue):
             await f.write(message)
 
 
-async def send_message(writer, message):
+async def send_message(writer, queues):
+    message = await queues['sending_queue'].get()
     writer.write(f'{sanitize(message)}\n\n'.encode())
     await writer.drain()
 
@@ -88,6 +93,15 @@ async def authenticate_token(reader, writer, token):
     return json.loads(results)
 
 
+async def ping_pong(reader, writer, queues):
+    while True:
+        writer.write('\n'.encode())
+        await writer.drain()
+        await reader.readline()
+        queues['watchdog_queue'].put_nowait(f'[{time.time()}] Connection to send server is alive. Ping message sent')
+        await asyncio.sleep(3)
+
+
 async def run_message_sender(host, port, token, queues):
     event = gui.SendingConnectionStateChanged.INITIATED
     queues['status_update_queue'].put_nowait(event)
@@ -105,22 +119,25 @@ async def run_message_sender(host, port, token, queues):
             event = gui.NicknameReceived(authentication_result['nickname'])
             queues['status_update_queue'].put_nowait(event)
         while True:
-            message = await queues['sending_queue'].get()
-            await send_message(writer, message)
-            queues['watchdog_queue'].put_nowait(f'[{time.time()}] Connection is alive. Message sent')
+            async with create_task_group() as sending_group:
+                sending_group.start_soon(ping_pong, reader, writer, queues)
+                sending_group.start_soon(send_message, writer, queues)
+                queues['watchdog_queue'].put_nowait(f'[{time.time()}] Connection is alive. Message sent')
 
 
-async def watch_for_connection(queues):
+async def watch_for_read_connection(queues):
     timeout_sum = 0
     while True:
         try:
-            async with timeout(1):
+            async with timeout(3):
                 event = await queues['watchdog_queue'].get()
                 timeout_sum = 0
                 logger.info(event)
 
         except TimeoutError:
             if timeout_sum >= 3:
+                event = gui.ReadConnectionStateChanged.CLOSED
+                queues['status_update_queue'].put_nowait(event)
                 raise ConnectionError
             timeout_sum += 1
             logger.info(f"{timeout_sum}s timeout is elapsed")
@@ -131,10 +148,11 @@ async def handle_connection(host, sending_port, token, reading_port, queues):
         try:
             async with create_task_group() as tg:
                 tg.start_soon(run_message_sender, host, sending_port, token, queues)
-                tg.start_soon(read_msgs, host, reading_port, queues)
-                tg.start_soon(watch_for_connection, queues)
+                tg.start_soon(read_msgs_handler, host, reading_port, queues)
+                tg.start_soon(watch_for_read_connection, queues)
         except ConnectionError:
             logger.info('Reconnecting to server')
+            await asyncio.sleep(1)
 
 
 async def main():
@@ -148,11 +166,10 @@ async def main():
     }
     args = get_args()
     await read_history(args.history_file_path, queues)
-    return await asyncio.gather(
-        handle_connection(args.host, args.sending_port, args.token, args.reading_port, queues),
-        save_messages(args.history_file_path, queues['messages_to_save_queue']),
-        gui.draw(queues)
-    )
+    async with create_task_group() as tg:
+        tg.start_soon(handle_connection, args.host, args.sending_port, args.token, args.reading_port, queues)
+        tg.start_soon(save_messages, args.history_file_path, queues['messages_to_save_queue'])
+        tg.start_soon(gui.draw, queues)
 
 
 # asyncio.run(main())
