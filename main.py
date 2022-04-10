@@ -10,8 +10,9 @@ from asyncio import TimeoutError
 from async_timeout import timeout
 from errors import TokenError
 from anyio import create_task_group
-from utils import (get_args, connect_to_chat, sanitize, save_token, is_token_file_exists, read_token_file,
-                   delete_token_file)
+
+from utils import get_args, connect_to_chat, sanitize, read_token_file
+from register_new_user import register_new_user, process_registration
 
 loop = asyncio.get_event_loop()
 logging.basicConfig(level=logging.INFO)
@@ -45,7 +46,6 @@ async def read_msgs_handler(host, port, queues):
                 await read_msgs(queues, reader)
             except UnicodeDecodeError:
                 continue
-            # await asyncio.sleep(1)
 
 
 async def save_messages(filepath, queue):
@@ -56,33 +56,10 @@ async def save_messages(filepath, queue):
 
 
 async def send_message(writer, queues):
-    message = await queues['sending_queue'].get()
-    writer.write(f'{sanitize(message)}\n\n'.encode())
-    await writer.drain()
-
-
-async def register_user(host, port, path):
-    async with connect_to_chat(host, port) as connection:
-        reader, writer = connection
-        await reader.readline()
-        writer.write('\n'.encode())
-        await writer.drain()
-        await reader.readline()
-        username = 'anonymous'
-        writer.write(f'{sanitize(username)}\n'.encode())
-        await writer.drain()
-        response = await reader.readline()
-        await save_token(json.loads(response)['account_hash'], path)
-
-
-async def run_token_handler(host, port, path, token):
-    if token:
-        await save_token(token, path)
     while True:
-        if is_token_file_exists(path):
-            await asyncio.sleep(1)
-            continue
-        await register_user(host, port, path)
+        message = await queues['sending_queue'].get()
+        writer.write(f'{sanitize(message)}\n\n'.encode())
+        await writer.drain()
 
 
 async def authenticate_token(reader, writer, token):
@@ -155,6 +132,25 @@ async def handle_connection(host, sending_port, token, reading_port, queues):
             await asyncio.sleep(1)
 
 
+async def token_handler(token, token_file_path, host, sending_port, queues):
+    if not token:
+        token = await read_token_file(token_file_path)
+    if not token:
+        try:
+            async with create_task_group() as register_task_group:
+                register_task_group.start_soon(register_new_user, logger, queues)
+                register_task_group.start_soon(
+                    process_registration, host, sending_port, token_file_path, logger, queues
+                )
+        except gui.TkAppClosed:
+            token = await read_token_file(token_file_path)
+            if token:
+                await asyncio.sleep(1)
+            else:
+                raise gui.TkAppClosed
+    return token
+
+
 async def main():
     queues = {
         'messages_queue': asyncio.Queue(),
@@ -163,14 +159,19 @@ async def main():
         'messages_to_save_queue': asyncio.Queue(),
         'error_queue': asyncio.Queue(),
         'watchdog_queue': asyncio.Queue(),
+        'token_queue': asyncio.Queue(),
+        'register_tk_queue': asyncio.Queue(),
     }
     args = get_args()
+    token = await token_handler(
+        args.token, args.token_file_path, args.host, args.sending_port, queues
+    )
+
     await read_history(args.history_file_path, queues)
     async with create_task_group() as tg:
-        tg.start_soon(handle_connection, args.host, args.sending_port, args.token, args.reading_port, queues)
+        tg.start_soon(handle_connection, args.host, args.sending_port, token, args.reading_port, queues)
         tg.start_soon(save_messages, args.history_file_path, queues['messages_to_save_queue'])
         tg.start_soon(gui.draw, queues)
 
 
-# asyncio.run(main())
 loop.run_until_complete(main())

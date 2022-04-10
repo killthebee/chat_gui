@@ -1,4 +1,3 @@
-import os
 import argparse
 import asyncio
 import aiofiles
@@ -20,7 +19,7 @@ def get_args():
     parser.add_argument('--sending_port', default='5050', help='chat port')
     parser.add_argument('--history_file_path', default='chat.txt', help='path to history txt file')
     parser.add_argument('--token_file_path', default='token.txt', help='path to token txt file')
-    parser.add_argument('--token', default='7c12802a-7770-11ec-8c47-0242ac110002', help='token for authorization in message sending server')
+    parser.add_argument('--token', help='token for authorization in message sending server')
     args = parser.parse_args()
     return args
 
@@ -40,12 +39,6 @@ async def read_token_file(path):
         return None
     async with aiofiles.open(path) as token_file:
         return await token_file.read()
-
-
-def delete_token_file(path):
-    if not is_token_file_exists(path):
-        return None
-    os.remove(path)
 
 
 @asynccontextmanager
